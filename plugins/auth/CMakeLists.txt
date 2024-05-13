@@ -92,6 +92,16 @@ IF(CRYPTO_PLUGIN)
                     SOURCES ${AUTH_DIR}/sha256_pw.c
                     LIBRARIES ${CRYPT_LIBS})
   ENDIF()
+
+  REGISTER_PLUGIN(TARGET client_ed25519v2
+                  TYPE MARIADB_CLIENT_PLUGIN_AUTH
+                  CONFIGURATIONS DYNAMIC STATIC OFF
+                  DEFAULT DYNAMIC
+                  SOURCES ${CC_SOURCE_DIR}/plugins/auth/ed25519v2.cc
+                  # ${CRYPT_SOURCE}
+                  # INCLUDES
+                  LIBRARIES ${CRYPT_LIBS}
+                  COMPILE_OPTIONS "-DMYSQL_CLIENT=1 -DHAVE_BOOL")
 ENDIF()
 
 #GSSAPI client authentication plugin
