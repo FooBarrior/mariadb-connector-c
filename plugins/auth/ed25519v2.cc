@@ -31,7 +31,7 @@ bool compute_derived_key(const char* password, size_t pass_len,
 {
   int ret = PKCS5_PBKDF2_HMAC(password, (int)pass_len, params->salt,
                               CHALLENGE_SALT_LENGTH,
-                              2 << (params->iterations + 10),
+                              1 << (params->iterations + 10),
                               EVP_sha512(),
                               PBKDF2_HASH_LENGTH, derived_key);
   if(ret == 0)
@@ -68,18 +68,23 @@ cleanup:
 }
 
 
-
 static int auth(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
 {
   uchar *serv_scramble;
-  size_t pkt_len= vio->read_packet(vio, reinterpret_cast<uchar**>(&serv_scramble));
+  int pkt_len= vio->read_packet(vio, (uchar**)(&serv_scramble));
   if (pkt_len != CHALLENGE_SCRAMBLE_LENGTH)
     return CR_SERVER_HANDSHAKE_ERR;
 
-  vio->write_packet(vio, (const uchar*)mysql->user, strlen(mysql->user));
-
-  Client_signed_response response;
-  memcpy(response.server_scramble, serv_scramble, CHALLENGE_SCRAMBLE_LENGTH);
+  union
+  {
+    struct alignas (1)
+    {
+      uchar server_scramble[CHALLENGE_SCRAMBLE_LENGTH];
+      Client_signed_response response;
+    };
+    uchar start[1];
+  } signed_msg;
+  memcpy(signed_msg.server_scramble, serv_scramble, CHALLENGE_SCRAMBLE_LENGTH);
 
   Server_challenge *params;
   pkt_len= vio->read_packet(vio, reinterpret_cast<uchar**>(&params));
@@ -88,19 +93,21 @@ static int auth(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
   if (params->hash != 'P')
     return CR_WRONG_HOST_INFO;
 
-  memcpy(response.client_scramble, mysql->scramble_buff,
+  char scramble[]= "12345678901234567890123456789012";
+  memcpy(signed_msg.response.client_scramble, scramble,
          CHALLENGE_SCRAMBLE_LENGTH);
 
-  uchar priv_key[PBKDF2_HASH_LENGTH];
+  uchar priv_key[ED25519_KEY_LENGTH];
   if (!compute_derived_key(mysql->passwd, strlen(mysql->passwd),
                            params, priv_key))
     return CR_ERROR;
 
-  if (!ed25519_sign(response.start, CHALLENGE_SCRAMBLE_LENGTH*2, priv_key,
-                    response.signature))
+  if (!ed25519_sign(signed_msg.start, CHALLENGE_SCRAMBLE_LENGTH*2,
+                    priv_key, signed_msg.response.signature))
     return CR_ERROR;
 
-  if (vio->write_packet(vio, response.start, sizeof response) != 0)
+  if (vio->write_packet(vio, signed_msg.response.start,
+                        sizeof signed_msg.response) != 0)
     return CR_ERROR;
 
   return CR_OK;
@@ -118,7 +125,7 @@ static int init_client(char *unused1   __attribute__((unused)),
 mysql_declare_client_plugin(AUTHENTICATION)
   "client_ed25519v2",
   "Nikita Maliavin",
-  "ED25519 v2 - asymmetric signature-based authentication",
+  "ED25519 v2 - asymmetric challenge-based authentication (client)",
   {0,2,0},
   "GPL",
   NULL,
@@ -126,5 +133,6 @@ mysql_declare_client_plugin(AUTHENTICATION)
   NULL,
   NULL,
   auth,
+  NULL,
 mysql_end_client_plugin;
 
