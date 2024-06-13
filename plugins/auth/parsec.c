@@ -18,8 +18,15 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#define random_bytes(B,L) RAND_bytes(B,L)
 #elif defined HAVE_GNUTLS
+#include <nettle/eddsa.h>
+#include <nettle/pbkdf2.h>
+#include <nettle/sha2.h>
+#include <nettle/nettle-meta.h>
+#include <nettle/hmac.h>
 #include <gnutls/crypto.h>
+#define random_bytes(B,L) gnutls_rnd(GNUTLS_RND_NONCE, B, L)
 #elif defined HAVE_WINCRYPT
 #endif
 
@@ -72,11 +79,15 @@ int compute_derived_key(const char* password, size_t pass_len,
                             1 << (params->iterations + 10),
                             EVP_sha512(), PBKDF2_HASH_LENGTH, derived_key);
 #else /* HAVE_GNUTLS */
-  gnutls_datum_t key= { (uchar*)password, pass_len };
-  gnutls_datum_t salt= { (uchar*)params->salt, CHALLENGE_SALT_LENGTH };
-  return 0 >=
-    gnutls_pbkdf2(GNUTLS_MAC_SHA512, &key, &salt, params->iterations,
-                  derived_key, PBKDF2_HASH_LENGTH);
+  struct hmac_sha512_ctx ctx;
+  hmac_sha512_set_key(&ctx, pass_len, (const uint8_t *)password);
+
+  pbkdf2(&ctx, (nettle_hash_update_func *)hmac_sha512_update,
+         (nettle_hash_digest_func *)hmac_sha512_digest, SHA512_DIGEST_SIZE,
+         1024 << params->iterations, CHALLENGE_SALT_LENGTH, params->salt,
+         PBKDF2_HASH_LENGTH, derived_key);
+
+  return 0;
 #endif
 }
 
@@ -104,13 +115,11 @@ cleanup:
   EVP_PKEY_free(pkey);
   return res;
 #else /* HAVE_GNUTLS */
-  gnutls_privkey_init key;
-  int res=gnutls_privkey_init (&key);
-  if (res < 0) return res;
-  res= gnutls_privkey_import_ecc_raw(key, GNUTLS_ECC_CURVE_ED25519,
-                                     );
-  if (res < 0) return res;
-  res= gnutls_privkey_generate2(gnutls_privkey_t pkey, gnutls_pk_algorithm_t algo, unsigned int bits, unsigned int flags, const gnutls_keygen_data_st * data, unsigned data_size)
+  char pub[ED25519_KEY_LENGTH];
+  ed25519_sha512_public_key((uint8_t*)pub, (uint8_t*)private_key);
+  ed25519_sha512_sign((uint8_t*)pub, (uint8_t*)private_key,
+                      response_len, (uint8_t*)response, (uint8_t*)signature);
+  return 0;
 #endif
 }
 
@@ -151,7 +160,7 @@ static int auth(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
   if (params->iterations > 3)
     return CR_AUTH_PLUGIN_ERR;
 
-  RAND_bytes(signed_msg.response.client_scramble, CHALLENGE_SCRAMBLE_LENGTH);
+  random_bytes(signed_msg.response.client_scramble, CHALLENGE_SCRAMBLE_LENGTH);
 
   if (compute_derived_key(mysql->passwd, strlen(mysql->passwd),
                            params, priv_key))
