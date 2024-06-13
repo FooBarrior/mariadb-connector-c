@@ -92,6 +92,20 @@ IF(CRYPTO_PLUGIN)
                     SOURCES ${AUTH_DIR}/sha256_pw.c
                     LIBRARIES ${CRYPT_LIBS})
   ENDIF()
+
+  IF (WITH_SSL STREQUAL "GNUTLS")
+    IF (${GNUTLS_VERSION_STRING} VERSION_LESS 3.6.0)
+      MESSAGE1(PARSEC "parsec plugin is not supported by GnuTLS < 3.6.0")
+    ELSE()
+      REGISTER_PLUGIN(TARGET parsec
+              TYPE MARIADB_CLIENT_PLUGIN_AUTH
+              CONFIGURATIONS DYNAMIC STATIC OFF
+              DEFAULT DYNAMIC
+              SOURCES ${AUTH_DIR}/parsec.c
+              LIBRARIES ${CRYPT_LIBS})
+      SET_SOURCE_FILES_PROPERTIES(${AUTH_DIR}/parsec.c PROPERTY COMPILE_FLAGS "-std=gnu11")
+    ENDIF()
+  ENDIF()
 ENDIF()
 
 #GSSAPI client authentication plugin
