@@ -174,7 +174,7 @@ mysql_declare_client_plugin(AUTHENTICATION)
   "Nikita Maliavin",
   "Password Authentication using Response Signed with Elliptic Curve",
   {0,1,0},
-  "GPL",
+  "LGPL",
   NULL,
   NULL,
   NULL,
