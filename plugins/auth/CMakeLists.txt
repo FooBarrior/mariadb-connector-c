@@ -92,6 +92,20 @@ IF(CRYPTO_PLUGIN)
                     SOURCES ${AUTH_DIR}/sha256_pw.c
                     LIBRARIES ${CRYPT_LIBS})
   ENDIF()
+
+  find_package(nettle)
+  IF(WITH_SSL STREQUAL "GNUTLS" AND NOT WIN32 AND NOT NETTLE_FOUND)
+    MESSAGE1(PARSEC "PARSEC requires nettle library and headers when built with GnuTLS")
+  ELSE()
+    REGISTER_PLUGIN(TARGET parsec
+            TYPE MARIADB_CLIENT_PLUGIN_AUTH
+            CONFIGURATIONS DYNAMIC STATIC OFF
+            DEFAULT DYNAMIC
+            SOURCES ${AUTH_DIR}/parsec.c
+            LIBRARIES ${CRYPT_LIBS})
+    SET_SOURCE_FILES_PROPERTIES(${AUTH_DIR}/parsec.c PROPERTY C_STANDARD "c11")
+  ENDIF()
+
 ENDIF()
 
 #GSSAPI client authentication plugin
