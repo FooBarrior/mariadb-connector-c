@@ -27,7 +27,10 @@
 #include <nettle/hmac.h>
 #include <gnutls/crypto.h>
 #define random_bytes(B,L) gnutls_rnd(GNUTLS_RND_NONCE, B, L)
-#elif defined HAVE_WINCRYPT
+#elif defined HAVE_SCHANNEL
+#include <windows.h>
+#include <wincrypt.h>
+#include <bcrypt.h>
 #endif
 
 #include <errmsg.h>
@@ -75,6 +78,62 @@ int compute_derived_key(const char* password, size_t pass_len,
                             CHALLENGE_SALT_LENGTH,
                             1 << (params->iterations + 10),
                             EVP_sha512(), PBKDF2_HASH_LENGTH, derived_key);
+
+#elif defined HAVE_SCHANNEL
+  NTSTATUS status;
+  BCRYPT_ALG_HANDLE hAlgorithm = NULL;
+  BCRYPT_HASH_HANDLE hHash = NULL;
+  ULONG derived_key_len = PBKDF2_HASH_LENGTH;
+  int ret = 1;
+
+  const char *func= "BCryptOpenAlgorithmProvider";
+  status = BCryptOpenAlgorithmProvider(&hAlgorithm, BCRYPT_SHA512_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+  if (!BCRYPT_SUCCESS(status))
+    goto err;
+
+  func= "BCryptOpenAlgorithmProvider";
+  status = BCryptDeriveKeyPBKDF2(hAlgorithm,
+                                (PUCHAR)password, (ULONG)pass_len,
+                                (PUCHAR)params->salt, CHALLENGE_SALT_LENGTH,
+                                1ULL << (params->iterations + 10),
+                                derived_key, derived_key_len,
+                                0);
+  if (!BCRYPT_SUCCESS(status))
+    goto err;
+
+  ret = 0;
+cleanup:
+  if (hAlgorithm) BCryptCloseAlgorithmProvider(hAlgorithm, 0);
+
+  return ret;
+err:
+  fprintf(stderr, "%s failed: 0x%08x\n", func, status);
+  goto cleanup;
+#elif 0
+
+  BCRYPT_ALG_HANDLE hAlg = NULL;
+  NTSTATUS status;
+  DWORD derived_key_len = PBKDF2_HASH_LENGTH;
+
+  status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_PBKDF2_ALGORITHM, NULL, 0);
+  if (status != 0) {
+    fprintf(stderr, "BCryptOpenAlgorithmProvider error: 0x%x\n", status);
+    return 1;
+  }
+
+  status = BCryptDeriveKeyPBKDF2(hAlg,
+                                (PUCHAR)password, (ULONG)pass_len,
+                                (PUCHAR)params->salt, CHALLENGE_SALT_LENGTH,
+                                (ULONG)(1 << (params->iterations + 10)),
+                                derived_key, derived_key_len, 0);
+  if (status != 0) {
+    fprintf(stderr, "BCryptDeriveKeyPBKDF2 error: 0x%x\n", status);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    return 1;
+  }
+
+  BCryptCloseAlgorithmProvider(hAlg, 0);
+  return 0;
 #else /* HAVE_GNUTLS */
   struct hmac_sha512_ctx ctx;
   hmac_sha512_set_key(&ctx, pass_len, (const uint8_t *)password);
@@ -92,7 +151,6 @@ int ed25519_sign(const uchar *response, size_t response_len,
                  const uchar *private_key, uchar *signature,
                  uchar *public_key)
 {
-
 #ifdef HAVE_OPENSSL
   int res= 1;
   size_t sig_len= ED25519_SIG_LENGTH, pklen= ED25519_KEY_LENGTH;
@@ -114,12 +172,79 @@ cleanup:
   EVP_MD_CTX_free(ctx);
   EVP_PKEY_free(pkey);
   return res;
+#elif defined HAVE_SCHANNEL
+  void *key= NULL;
+  NCRYPT_PROV_HANDLE hProvider = 0;
+  NCRYPT_KEY_HANDLE hKey = 0;
+  BCRYPT_KEY_HANDLE hbKey = 0;
+  SECURITY_STATUS status;
+  DWORD keyBlobLen = 0;
+  DWORD sigLen = ED25519_SIG_LENGTH;
+  int result = 1;
+
+  BCRYPT_ALG_HANDLE pAlg;
+  const char curve_name[]= "curve25519";
+  const char *func = "BCryptOpenAlgorithmProvider";
+  status = BCryptOpenAlgorithmProvider(&pAlg, BCRYPT_ECDH_ALGORITHM, NULL, 0);
+  if (status != ERROR_SUCCESS)
+    goto err;
+
+  func = "BCryptSetProperty(alg)";
+  status = BCryptSetProperty(pAlg, BCRYPT_ECC_CURVE_NAME, BCRYPT_ECC_CURVE_25519, sizeof BCRYPT_ECC_CURVE_25519, 0);
+  if (status != ERROR_SUCCESS)
+    goto err;
+  union
+  {
+    struct
+    {
+      BCRYPT_KEY_BLOB blb;
+      char key[ED25519_KEY_LENGTH];
+    };
+    uchar start[1];
+  } winkey;
+  static_assert(sizeof winkey == sizeof winkey.blb + ED25519_KEY_LENGTH);
+
+  memcpy(winkey.key, private_key, ED25519_KEY_LENGTH);
+  winkey.blb.Magic= BCRYPT_ECDSA_PRIVATE_GENERIC_MAGIC;
+
+  func = "BCryptImportKeyPair";
+  status = BCryptImportKeyPair(pAlg, NULL, BCRYPT_PRIVATE_KEY_BLOB, &hbKey, winkey.start, sizeof winkey, 0);
+  if (status != ERROR_SUCCESS)
+    goto err;
+
+  ulong written=0;
+  func = "BCryptSignHash";
+  status = BCryptSignHash(hbKey, NULL, (PUCHAR)response, (ULONG)response_len, signature, ED25519_SIG_LENGTH, &written, 0);
+  if (status != ERROR_SUCCESS)
+    goto err;
+  result = 0;
+cleanup:
+  return result;
+err:
+  fprintf(stderr, "%s failed: 0x%08x\n", func, status);
+  goto cleanup;
 #else /* HAVE_GNUTLS */
   ed25519_sha512_public_key((uint8_t*)public_key, (uint8_t*)private_key);
   ed25519_sha512_sign((uint8_t*)public_key, (uint8_t*)private_key,
                       response_len, (uint8_t*)response, (uint8_t*)signature);
   return 0;
 #endif
+}
+
+int random_bytes(uchar *buf, int num)
+{
+  HCRYPTPROV hProv;
+  if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+    return 1;
+
+  if (!CryptGenRandom(hProv, num, buf))
+  {
+    CryptReleaseContext(hProv, 0);
+    return 1;
+  }
+
+  CryptReleaseContext(hProv, 0);
+  return 0;
 }
 
 
