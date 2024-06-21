@@ -52,16 +52,18 @@ IF(CRYPTO_PLUGIN)
                     ${REF10_DIR}/ge_p3_dbl.c ${REF10_DIR}/ge_tobytes.c ${REF10_DIR}/fe_invert.c ${REF10_DIR}/fe_sq.c
                     ${REF10_DIR}/ge_msub.c ${REF10_DIR}/ge_p3_tobytes.c ${REF10_DIR}/keypair.c)
 
+  add_library(ed25519_crypto ${REF10_SOURCES} ${CRYPT_SOURCE}
+              INCLUDES ${REF10_DIR})
   REGISTER_PLUGIN(TARGET client_ed25519
                 TYPE MARIADB_CLIENT_PLUGIN_AUTH
                 CONFIGURATIONS DYNAMIC STATIC OFF
                 DEFAULT DYNAMIC
                 SOURCES ${AUTH_DIR}/ed25519.c
-                        ${REF10_SOURCES}
-                        ${CRYPT_SOURCE}
                 INCLUDES ${REF10_DIR}
-                LIBRARIES ${CRYPT_LIBS}
+                LIBRARIES ${CRYPT_LIBS} ed25519_crypto
                 COMPILE_OPTIONS -DMYSQL_CLIENT=1)
+  set_property(TARGET client_ed25519 PROPERTY C_STANDARD 11)
+
   IF(MSVC)
      # Silence conversion (integer truncation) warnings from reference code
      SET_SOURCE_FILES_PROPERTIES(${REF10_SOURCES} PROPERTY COMPILE_FLAGS "-DMYSQL_CLIENT=1 /wd4244 /wd4146")
